@@ -1,6 +1,12 @@
 #!/bin/bash
 
-VERSION=1.2
+VERSION=1.3
+# Version 1.3   2016/02/07
+#   * add possibility to backup to loop device
+#   * add -i option
+#   * remove second occurrence of double rsync-option "-t"
+#   * add seperate RSYNC_OPTIONS_NET constant
+#   * add primitive font formatting constants BOLDTEXT / REGULARTEXT
 # Version 1.2	2015/02/17
 #	* add -x option
 #	* tweak some echo messages
@@ -13,9 +19,18 @@ VERSION=1.2
 #	* Strip trailing s from PART_START - (fdisk now doesn't seem to accept...)
 #
 
+echo "This version is still in development and not fully functional yet."
+echo "Please use the original version from https://github.com/billw2/rpi-clone"
+exit 0
+
 PGM=`basename $0`
 
-RSYNC_OPTIONS="--force -rltWDEgopt"
+RSYNC_OPTIONS="--force -rltWDEgop"
+RSYNC_OPTIONS_NET="--force -rtlDEgop"
+
+# Font "formatting" in Bash
+BOLDTEXT='\e[1m'
+REGULARTEXT='\e[0m'
 
 # List of extra dirs to create under /mnt.
 OPTIONAL_MNT_DIRS="clone mnt sda sdb rpi0 rpi1"
@@ -49,19 +64,47 @@ if test -e /sbin/fsck.vfat
 then
 	HAVE_FSCK_VFAT="yes"
 else
-
 	echo "[Note] fsck.vfat was not found."
 	echo "It is recommended to install dosfstools:"
 	echo "    $ sudo apt-get update"
 	echo "    $ sudo apt-get install dosfstools"
 fi
 
+if test -e /sbin/mount.nfs # NFS
+then
+    HAVE_NFS_SUPPORT="yes"
+else
+    HAVE_NFS_SUPPORT="no"
+fi
+
+if test -e /usr/bin/sshfs # SSHFS
+then
+    HAVE_SSHFS_SUPPORT="yes"
+else
+    HAVE_SSHFS_SUPPORT="no"
+fi
+
+if test -e /usr/bin/mount_afp # AFPFS-NG
+then
+    HAVE_AFS_SUPPORT="yes"
+else
+    HAVE_AFS_SUPPORT="no"
+fi
+
+if test -e /sbin/fsck.xfs # XFS
+then
+    HAVE_XFS_SUPPORT="yes"
+else
+    HAVE_XFS_SUPPORT="no"
+fi
+
 usage()
 	{
 	echo ""
-	echo "usage: $PGM sdN {-f|--force-initialize} {-v|--verbose} {-x}"
+	echo "usage: $PGM sdN {-i|--image} {-f|--force-initialize} {-v|--verbose} {-x}"
 	echo "    Example:  $PGM sda"
 	echo "    -v - list all files as they are copied."
+	echo "    -i - backup to image-file (locally or via network) instead of SD card"
 	echo "    -f - force initialize the destination partitions"
 	echo "    -x - use set -x for very verbose bash shell script debugging"
 	echo ""
@@ -107,6 +150,9 @@ do
 		-f|--force-initialize)
 			FORCE_INITIALIZE=true
 			;;
+		-i|--image)
+			IMAGE_MODE=on
+			;;
 		-x)
 			set -x
 			;;
@@ -132,7 +178,7 @@ then
 	exit 0
 fi
 
-if ! cat /proc/partitions | grep -q $DST_DISK
+if [ ! cat /proc/partitions | grep -q $DST_DISK -a ! $IMAGE_MODE == "on" ]
 then
 	echo "Destination disk '$DST_DISK' does not exist."
 	echo "Plug the destination SD card into a card reader connected to a"
@@ -140,6 +186,82 @@ then
 	echo -e "'cat /proc/partitions' to see where it might be.\n"
 	exit 0
 fi
+
+if [ $IMAGE_MODE == "on" ]
+then
+	# check whether file already exists - and if so whether to overwrite it
+	if test -f $DST_DISK
+		then
+			echo "Destination image file '$DST_DISK' already exists."
+			echo -n -e "Do you want to overwrite the file [y/n]? "
+
+			OVERWRITE=0
+
+			while true; do
+				read -r -s -n 1 a
+				case "${a^^*}" in
+					Y) echo "y"
+					   OVERWRITE=1
+					   break ;;
+					N) echo "n"
+					   echo -e "$BOLDTEXT" "Please re-run $PGM with a different target filename."
+					   echo -e "$REGULARTEXT" "Exiting."
+					   exit 0
+					   break ;;
+					$'\e') echo "ESC"
+					   echo -e "$BOLDTEXT" "Aborted."
+					   echo -e "$REGULARTEXT" "Exiting."
+					   exit 1
+					   break ;;
+				esac
+			done
+	fi
+	if ! test -w $DST_DISK
+			echo "The destination file seems not to be writable."
+			echo -e "$BOLDTEXT" "This error is fatal. Cannot continue."
+			echo -e "$REGULARTEXT" "Exiting."
+			exit 1
+	fi
+fi
+
+warn_missing_packages()
+	{
+	if [ $HAVE_NFS_SUPPORT == "no" ]
+	then
+		echo "[Note] mount.nfs was not found."
+		echo "If you intend to backup to a NFS filesystem"
+		echo "you need to install nfs-common first:"
+		echo "    $ sudo apt-get update"
+		echo "    $ sudo apt-get install nfscommon"
+	fi
+
+	if [ $HAVE_SSHFS_SUPPORT == "no" ]
+	then
+		echo "[Note] sshfs was not found."
+		echo "If you intend to backup to a filesystem via SSHFS"
+		echo "you need to install sshfs first:"
+		echo "    $ sudo apt-get update"
+		echo "    $ sudo apt-get install sshfs"
+	fi
+
+	if [ $HAVE_AFS_SUPPORT == "no" ]
+	then
+		echo "[Note] mount_afp was not found."
+		echo "If you intend to backup to a Apple AFP filesystem"
+		echo "you are required to install afpfs-ng first:"
+		echo "    $ sudo apt-get update"
+		echo "    $ sudo apt-get install afpfs-ng"
+	fi
+
+	if [ $HAVE_XFS_SUPPORT == "no" ]
+	then
+		echo "[Note] fsck.xfs was not found."
+		echo "If you intend to backup to a XFS filesystem"
+		echo "you are required to install xfsprogs first"
+		echo "    $ sudo apt-get update"
+		echo "    $ sudo apt-get install xfsprogs"
+	fi
+	}
 
 unmount_or_abort()
 	{
